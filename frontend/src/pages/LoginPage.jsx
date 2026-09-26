@@ -5,15 +5,22 @@ import api from '../api/client.js';
 export default function LoginPage() {
   const navigate = useNavigate();
   const [form, setForm] = useState({ email: '', password: '' });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   const onSubmit = async (e) => {
     e.preventDefault();
     try {
+      setLoading(true);
+      setError('');
       const res = await api.post('/auth/login', form);
       localStorage.setItem('token', res.data.token);
+      localStorage.setItem('user', JSON.stringify(res.data.user));
       navigate('/');
-    } catch (error) {
-      console.error(error);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Login failed');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -21,9 +28,10 @@ export default function LoginPage() {
     <div className="auth-page">
       <form className="auth-card" onSubmit={onSubmit}>
         <h1>Log in</h1>
+        {error && <div className="form-error">{error}</div>}
         <input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="Email" />
         <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Password" />
-        <button type="submit">Continue</button>
+        <button type="submit" disabled={loading}>{loading ? 'Loading...' : 'Continue'}</button>
       </form>
     </div>
   );

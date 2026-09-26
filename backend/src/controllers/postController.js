@@ -1,10 +1,10 @@
+import { Op } from 'sequelize';
 import { Post, User, Like, Comment } from '../models/index.js';
-import { v4 as uuidv4 } from 'uuid';
 
 export const createPost = async (req, res) => {
   try {
-    const { caption, location, hashtags } = req.body;
-    const images = req.files?.map(f => f.path) || [];
+    const { caption, location, hashtags, visibility = 'public' } = req.body;
+    const images = req.files?.map((file) => file.path) || [];
 
     const post = await Post.create({
       userId: req.user.id,
@@ -12,7 +12,8 @@ export const createPost = async (req, res) => {
       image: images[0] || '',
       images,
       location,
-      hashtags: hashtags ? hashtags.split(',') : []
+      hashtags: hashtags ? hashtags.split(',') : [],
+      visibility
     });
 
     const user = await User.findByPk(req.user.id);
@@ -27,12 +28,22 @@ export const createPost = async (req, res) => {
 
 export const getFeed = async (req, res) => {
   try {
-    const page = req.query.page || 1;
-    const limit = 10;
+    const page = Number(req.query.page || 1);
+    const limit = Number(req.query.limit || 10);
     const offset = (page - 1) * limit;
 
+    const follows = await req.db?.Follow?.findAll ? await req.db.Follow.findAll({ where: { followerId: req.user.id, status: 'accepted' } }) : [];
+    const followedIds = follows.map((f) => f.followingId);
+    followedIds.push(req.user.id);
+
     const posts = await Post.findAll({
-      include: [{ model: User, as: 'author', attributes: ['id', 'username', 'avatar'] }],
+      where: {
+        [Op.or]: [
+          { userId: { [Op.in]: followedIds } },
+          { visibility: 'public' }
+        ]
+      },
+      include: [{ model: User, as: 'author', attributes: ['id', 'username', 'avatar', 'fullName'] }],
       order: [['createdAt', 'DESC']],
       limit,
       offset
@@ -59,9 +70,7 @@ export const getPostById = async (req, res) => {
 export const likePost = async (req, res) => {
   try {
     const { id } = req.params;
-    const existing = await Like.findOne({
-      where: { userId: req.user.id, postId: id }
-    });
+    const existing = await Like.findOne({ where: { userId: req.user.id, postId: id } });
 
     if (existing) {
       await existing.destroy();
@@ -85,21 +94,14 @@ export const commentPost = async (req, res) => {
   try {
     const { id } = req.params;
     const { text } = req.body;
-
     if (!text) return res.status(400).json({ message: 'Comment text required' });
 
-    const comment = await Comment.create({
-      userId: req.user.id,
-      postId: id,
-      text
-    });
-
+    const comment = await Comment.create({ userId: req.user.id, postId: id, text });
     const post = await Post.findByPk(id);
     post.comments = (post.comments || 0) + 1;
     await post.save();
 
-    const populatedComment = await comment.reload({ include: [{ model: User, as: 'author' }] });
-    res.status(201).json({ comment: populatedComment });
+    res.status(201).json({ comment });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
