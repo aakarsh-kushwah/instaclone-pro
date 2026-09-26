@@ -1,68 +1,106 @@
-import { db } from '../config/db.js';
+import { Reel, User, Like, Comment } from '../models/index.js';
 
 export const createReel = async (req, res) => {
   try {
-    const { caption, videoUrl } = req.body;
-    if (!videoUrl) {
-      return res.status(400).json({ message: 'Video URL is required' });
-    }
+    const { caption, music, musicName, musicArtist, hashtags } = req.body;
+    const videoPath = req.file?.path;
 
-    const [result] = await db.query(
-      'INSERT INTO reels (user_id, caption, video_url, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW())',
-      [req.user.id, caption || '', videoUrl]
-    );
+    if (!videoPath) return res.status(400).json({ message: 'Video required' });
 
-    return res.status(201).json({ id: result.insertId, message: 'Reel created successfully' });
+    const reel = await Reel.create({
+      userId: req.user.id,
+      caption,
+      video: videoPath,
+      music,
+      musicName,
+      musicArtist,
+      hashtags: hashtags ? hashtags.split(',') : []
+    });
+
+    const user = await User.findByPk(req.user.id);
+    user.reelsCount = (user.reelsCount || 0) + 1;
+    await user.save();
+
+    res.status(201).json({ message: 'Reel created', reel });
   } catch (error) {
-    return res.status(500).json({ message: 'Unable to create reel', error: error.message });
+    res.status(500).json({ message: error.message });
   }
 };
 
 export const getReels = async (req, res) => {
   try {
-    const [rows] = await db.query(`
-      SELECT r.*, u.username, u.avatar,
-        (SELECT COUNT(*) FROM reel_likes WHERE reel_id = r.id) AS likes_count,
-        (SELECT COUNT(*) FROM reel_comments WHERE reel_id = r.id) AS comments_count
-      FROM reels r
-      JOIN users u ON u.id = r.user_id
-      ORDER BY r.created_at DESC
-    `);
+    const page = req.query.page || 1;
+    const limit = 10;
+    const offset = (page - 1) * limit;
 
-    return res.json(rows);
+    const reels = await Reel.findAll({
+      include: [{ model: User, as: 'author', attributes: ['id', 'username', 'avatar'] }],
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset
+    });
+
+    res.json({ reels, page });
   } catch (error) {
-    return res.status(500).json({ message: 'Unable to fetch reels', error: error.message });
+    res.status(500).json({ message: error.message });
   }
 };
 
 export const likeReel = async (req, res) => {
   try {
     const { id } = req.params;
-    const [existing] = await db.query('SELECT * FROM reel_likes WHERE reel_id = ? AND user_id = ?', [id, req.user.id]);
+    const existing = await Like.findOne({
+      where: { userId: req.user.id, reelId: id }
+    });
 
-    if (existing.length) {
-      await db.query('DELETE FROM reel_likes WHERE reel_id = ? AND user_id = ?', [id, req.user.id]);
+    if (existing) {
+      await existing.destroy();
+      const reel = await Reel.findByPk(id);
+      reel.likes = Math.max(0, reel.likes - 1);
+      await reel.save();
       return res.json({ liked: false });
     }
 
-    await db.query('INSERT INTO reel_likes (reel_id, user_id, created_at) VALUES (?, ?, NOW())', [id, req.user.id]);
-    return res.json({ liked: true });
+    await Like.create({ userId: req.user.id, reelId: id });
+    const reel = await Reel.findByPk(id);
+    reel.likes = (reel.likes || 0) + 1;
+    await reel.save();
+    res.json({ liked: true });
   } catch (error) {
-    return res.status(500).json({ message: 'Unable to like reel', error: error.message });
+    res.status(500).json({ message: error.message });
   }
 };
 
-export const commentOnReel = async (req, res) => {
+export const commentReel = async (req, res) => {
   try {
     const { id } = req.params;
     const { text } = req.body;
-    if (!text) {
-      return res.status(400).json({ message: 'Comment text is required' });
-    }
 
-    await db.query('INSERT INTO reel_comments (reel_id, user_id, text, created_at) VALUES (?, ?, ?, NOW())', [id, req.user.id, text]);
-    return res.status(201).json({ message: 'Reel comment added successfully' });
+    const comment = await Comment.create({
+      userId: req.user.id,
+      reelId: id,
+      text
+    });
+
+    const reel = await Reel.findByPk(id);
+    reel.comments = (reel.comments || 0) + 1;
+    await reel.save();
+
+    res.status(201).json({ comment });
   } catch (error) {
-    return res.status(500).json({ message: 'Unable to add reel comment', error: error.message });
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const viewReel = async (req, res) => {
+  try {
+    const reel = await Reel.findByPk(req.params.id);
+    if (!reel) return res.status(404).json({ message: 'Reel not found' });
+    
+    reel.views = (reel.views || 0) + 1;
+    await reel.save();
+    res.json({ views: reel.views });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 };

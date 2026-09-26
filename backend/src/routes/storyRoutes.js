@@ -1,10 +1,14 @@
 import express from 'express';
-import { createStory, getStories } from '../controllers/storyController.js';
-import { authenticate } from '../middleware/auth.js';
+import authenticate from '../middleware/authenticate.js';
+import upload from '../middleware/upload.js';
+import * as storyController from '../controllers/storyController.js';
 
 const router = express.Router();
 
-router.post('/', authenticate, createStory);
-router.get('/', authenticate, getStories);
+router.post('/', authenticate, upload.single('media'), storyController.createStory);
+router.get('/', authenticate, storyController.getStories);
+router.get('/user/:userId', authenticate, storyController.getUserStories);
+router.post('/:id/view', authenticate, storyController.viewStory);
+router.delete('/:id', authenticate, storyController.deleteStory);
 
 export default router;

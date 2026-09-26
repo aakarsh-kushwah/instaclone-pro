@@ -1,101 +1,123 @@
-import { db } from '../config/db.js';
+import { Post, User, Like, Comment } from '../models/index.js';
+import { v4 as uuidv4 } from 'uuid';
 
 export const createPost = async (req, res) => {
   try {
-    const { caption, imageUrl } = req.body;
-    const [result] = await db.query(
-      'INSERT INTO posts (user_id, caption, image_url, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW())',
-      [req.user.id, caption || '', imageUrl || '',]
-    );
+    const { caption, location, hashtags } = req.body;
+    const images = req.files?.map(f => f.path) || [];
 
-    return res.status(201).json({ id: result.insertId, message: 'Post created successfully' });
+    const post = await Post.create({
+      userId: req.user.id,
+      caption,
+      image: images[0] || '',
+      images,
+      location,
+      hashtags: hashtags ? hashtags.split(',') : []
+    });
+
+    const user = await User.findByPk(req.user.id);
+    user.postsCount = (user.postsCount || 0) + 1;
+    await user.save();
+
+    res.status(201).json({ message: 'Post created', post });
   } catch (error) {
-    return res.status(500).json({ message: 'Unable to create post', error: error.message });
+    res.status(500).json({ message: error.message });
   }
 };
 
 export const getFeed = async (req, res) => {
   try {
-    const [rows] = await db.query(`
-      SELECT p.*, u.username, u.avatar, u.full_name,
-        (SELECT COUNT(*) FROM post_likes WHERE post_id = p.id) AS likes_count,
-        (SELECT COUNT(*) FROM post_comments WHERE post_id = p.id) AS comments_count
-      FROM posts p
-      JOIN users u ON u.id = p.user_id
-      ORDER BY p.created_at DESC
-      LIMIT 20
-    `);
+    const page = req.query.page || 1;
+    const limit = 10;
+    const offset = (page - 1) * limit;
 
-    return res.json(rows);
+    const posts = await Post.findAll({
+      include: [{ model: User, as: 'author', attributes: ['id', 'username', 'avatar'] }],
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset
+    });
+
+    res.json({ posts, page, limit });
   } catch (error) {
-    return res.status(500).json({ message: 'Unable to fetch feed', error: error.message });
+    res.status(500).json({ message: error.message });
   }
 };
 
-export const getUserPosts = async (req, res) => {
+export const getPostById = async (req, res) => {
   try {
-    const { userId } = req.params;
-    const [rows] = await db.query(`
-      SELECT p.*, u.username, u.avatar,
-        (SELECT COUNT(*) FROM post_likes WHERE post_id = p.id) AS likes_count,
-        (SELECT COUNT(*) FROM post_comments WHERE post_id = p.id) AS comments_count
-      FROM posts p
-      JOIN users u ON u.id = p.user_id
-      WHERE p.user_id = ?
-      ORDER BY p.created_at DESC
-    `, [userId]);
-
-    return res.json(rows);
+    const post = await Post.findByPk(req.params.id, {
+      include: [{ model: User, as: 'author' }]
+    });
+    if (!post) return res.status(404).json({ message: 'Post not found' });
+    res.json(post);
   } catch (error) {
-    return res.status(500).json({ message: 'Unable to fetch user posts', error: error.message });
+    res.status(500).json({ message: error.message });
   }
 };
 
 export const likePost = async (req, res) => {
   try {
     const { id } = req.params;
-    const [existing] = await db.query('SELECT * FROM post_likes WHERE post_id = ? AND user_id = ?', [id, req.user.id]);
+    const existing = await Like.findOne({
+      where: { userId: req.user.id, postId: id }
+    });
 
-    if (existing.length) {
-      await db.query('DELETE FROM post_likes WHERE post_id = ? AND user_id = ?', [id, req.user.id]);
-      return res.json({ liked: false });
+    if (existing) {
+      await existing.destroy();
+      const post = await Post.findByPk(id);
+      post.likes = Math.max(0, post.likes - 1);
+      await post.save();
+      return res.json({ liked: false, likes: post.likes });
     }
 
-    await db.query('INSERT INTO post_likes (post_id, user_id, created_at) VALUES (?, ?, NOW())', [id, req.user.id]);
-    return res.json({ liked: true });
+    await Like.create({ userId: req.user.id, postId: id, type: 'like' });
+    const post = await Post.findByPk(id);
+    post.likes = (post.likes || 0) + 1;
+    await post.save();
+    res.json({ liked: true, likes: post.likes });
   } catch (error) {
-    return res.status(500).json({ message: 'Unable to like post', error: error.message });
+    res.status(500).json({ message: error.message });
   }
 };
 
-export const commentOnPost = async (req, res) => {
+export const commentPost = async (req, res) => {
   try {
     const { id } = req.params;
     const { text } = req.body;
-    if (!text) {
-      return res.status(400).json({ message: 'Comment text is required' });
-    }
 
-    await db.query('INSERT INTO post_comments (post_id, user_id, text, created_at) VALUES (?, ?, ?, NOW())', [id, req.user.id, text]);
-    return res.status(201).json({ message: 'Comment added successfully' });
+    if (!text) return res.status(400).json({ message: 'Comment text required' });
+
+    const comment = await Comment.create({
+      userId: req.user.id,
+      postId: id,
+      text
+    });
+
+    const post = await Post.findByPk(id);
+    post.comments = (post.comments || 0) + 1;
+    await post.save();
+
+    const populatedComment = await comment.reload({ include: [{ model: User, as: 'author' }] });
+    res.status(201).json({ comment: populatedComment });
   } catch (error) {
-    return res.status(500).json({ message: 'Unable to add comment', error: error.message });
+    res.status(500).json({ message: error.message });
   }
 };
 
-export const bookmarkPost = async (req, res) => {
+export const deletePost = async (req, res) => {
   try {
-    const { id } = req.params;
-    const [existing] = await db.query('SELECT * FROM bookmarks WHERE user_id = ? AND post_id = ?', [req.user.id, id]);
+    const post = await Post.findByPk(req.params.id);
+    if (!post) return res.status(404).json({ message: 'Post not found' });
+    if (post.userId !== req.user.id) return res.status(403).json({ message: 'Unauthorized' });
 
-    if (existing.length) {
-      await db.query('DELETE FROM bookmarks WHERE user_id = ? AND post_id = ?', [req.user.id, id]);
-      return res.json({ bookmarked: false });
-    }
+    await post.destroy();
+    const user = await User.findByPk(req.user.id);
+    user.postsCount = Math.max(0, user.postsCount - 1);
+    await user.save();
 
-    await db.query('INSERT INTO bookmarks (user_id, post_id, created_at) VALUES (?, ?, NOW())', [req.user.id, id]);
-    return res.json({ bookmarked: true });
+    res.json({ message: 'Post deleted' });
   } catch (error) {
-    return res.status(500).json({ message: 'Unable to toggle bookmark', error: error.message });
+    res.status(500).json({ message: error.message });
   }
 };

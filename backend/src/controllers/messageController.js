@@ -1,33 +1,90 @@
-import { db } from '../config/db.js';
+import { Message, User, Block } from '../models/index.js';
+import { Op } from 'sequelize';
 
 export const sendMessage = async (req, res) => {
   try {
-    const { receiverId, text } = req.body;
-    if (!receiverId || !text) {
-      return res.status(400).json({ message: 'Receiver and text are required' });
-    }
+    const { receiverId, text, image, video, audio } = req.body;
 
-    const [result] = await db.query(
-      'INSERT INTO messages (sender_id, receiver_id, text, created_at) VALUES (?, ?, ?, NOW())',
-      [req.user.id, receiverId, text]
-    );
+    const blocked = await Block.findOne({
+      where: {
+        [Op.or]: [
+          { blockerId: receiverId, blockedId: req.user.id },
+          { blockerId: req.user.id, blockedId: receiverId }
+        ]
+      }
+    });
+    if (blocked) return res.status(403).json({ message: 'Cannot message this user' });
 
-    return res.status(201).json({ id: result.insertId, message: 'Message sent' });
+    const message = await Message.create({
+      senderId: req.user.id,
+      receiverId,
+      text,
+      image,
+      video,
+      audio
+    });
+
+    const populated = await message.reload({
+      include: [{ model: User, as: 'sender' }, { model: User, as: 'receiver' }]
+    });
+
+    res.status(201).json({ message: populated });
   } catch (error) {
-    return res.status(500).json({ message: 'Unable to send message', error: error.message });
+    res.status(500).json({ message: error.message });
   }
 };
 
-export const getMessages = async (req, res) => {
+export const getConversation = async (req, res) => {
   try {
     const { userId } = req.params;
-    const [rows] = await db.query(
-      `SELECT * FROM messages WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?) ORDER BY created_at ASC`,
-      [req.user.id, userId, userId, req.user.id]
+    const page = req.query.page || 1;
+    const limit = 20;
+    const offset = (page - 1) * limit;
+
+    const messages = await Message.findAll({
+      where: {
+        [Op.or]: [
+          { senderId: req.user.id, receiverId: userId },
+          { senderId: userId, receiverId: req.user.id }
+        ]
+      },
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset
+    });
+
+    await Message.update(
+      { isRead: true, readAt: new Date() },
+      {
+        where: {
+          senderId: userId,
+          receiverId: req.user.id,
+          isRead: false
+        }
+      }
     );
 
-    return res.json(rows);
+    res.json({ messages: messages.reverse(), page });
   } catch (error) {
-    return res.status(500).json({ message: 'Unable to fetch messages', error: error.message });
+    res.status(500).json({ message: error.message });
+  }
+};
+
+export const getConversations = async (req, res) => {
+  try {
+    const conversations = await Message.findAll({
+      where: {
+        [Op.or]: [{ senderId: req.user.id }, { receiverId: req.user.id }]
+      },
+      attributes: ['senderId', 'receiverId', 'text', 'createdAt', 'isRead'],
+      order: [['createdAt', 'DESC']],
+      limit: 50,
+      raw: true,
+      group: ['senderId', 'receiverId']
+    });
+
+    res.json({ conversations });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 };

@@ -1,14 +1,15 @@
 import express from 'express';
-import { createPost, getFeed, getUserPosts, likePost, commentOnPost, bookmarkPost } from '../controllers/postController.js';
-import { authenticate } from '../middleware/auth.js';
+import authenticate from '../middleware/authenticate.js';
+import upload from '../middleware/upload.js';
+import * as postController from '../controllers/postController.js';
 
 const router = express.Router();
 
-router.post('/', authenticate, createPost);
-router.get('/feed', authenticate, getFeed);
-router.get('/user/:userId', authenticate, getUserPosts);
-router.post('/:id/like', authenticate, likePost);
-router.post('/:id/comment', authenticate, commentOnPost);
-router.post('/:id/bookmark', authenticate, bookmarkPost);
+router.post('/', authenticate, upload.array('images'), postController.createPost);
+router.get('/feed', authenticate, postController.getFeed);
+router.get('/:id', authenticate, postController.getPostById);
+router.post('/:id/like', authenticate, postController.likePost);
+router.post('/:id/comment', authenticate, postController.commentPost);
+router.delete('/:id', authenticate, postController.deletePost);
 
 export default router;
